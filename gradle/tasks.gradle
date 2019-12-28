@@ -1,0 +1,163 @@
+import org.apache.ivy.util.url.*
+import org.apache.tools.ant.taskdefs.condition.Os
+import java.nio.file.*
+import java.util.*
+
+buildscript {
+    repositories {
+        mavenLocal()
+        mavenCentral()
+        jcenter()
+    }
+    dependencies {
+        classpath "org.apache.ivy:ivy:${project.ivyVersion}"
+    }
+}
+
+apply plugin: 'de.undercouch.download'
+apply plugin: 'com.boazj.log'
+
+def tomcatDirectory = "${buildDir}/apache-tomcat-${tomcatVersion}"
+
+
+task copyWebAppIntoJib(type: Copy, group: "Docker", description: "Copy the web application into Docker image") {
+    dependsOn build
+    from "build/libs/${webApplicationBinaryName}"
+    into "src/main/jib/docker/moa/war"
+}
+
+task deleteWebAppFromJib(type: Delete, group: "Docker", description: "Explodes the moa web application archive") {
+    delete "src/main/jib/docker/moa"
+}
+
+task explodeWar(type: Copy, group: "build", description: "Explodes the moa web application archive") {
+    dependsOn build
+    from zipTree("build/libs/${webApplicationBinaryName}")
+    into "${buildDir}/moa"
+}
+
+task run(group: "build", description: "Run the moa web application in embedded container mode") {
+    dependsOn build
+    doLast {
+        def moaRunArgs = Arrays.asList("-Xmx2048M -XX:+TieredCompilation -XX:TieredStopAtLevel=1".split(" "))
+        javaexec {
+            main = "-jar"
+            jvmArgs = moaRunArgs
+            args = ["build/libs/${webApplicationBinaryName}"]
+            logger.info "Started ${commandLine}"
+        }
+    }
+}
+
+task setExecutable(group: "build", description: "Configure the project to run in executable mode") {
+    doFirst {
+        project.setProperty("executable", "true")
+        logger.info "Configuring the project as executable"
+    }
+}
+
+task executable(type:Exec, group: "build", description: "Run the moa web application in standalone executable mode") {
+    dependsOn setExecutable, build
+    doFirst {
+        workingDir "."
+        if (!Os.isFamily(Os.FAMILY_WINDOWS)) {
+            commandLine "chmod", "+x", bootWar.archivePath
+        }
+        logger.info "Running ${bootWar.archivePath}"
+        commandLine bootWar.archivePath
+    }
+}
+
+task debug(group: "build", description: "Debug the moa web application in embedded mode on port 5005") {
+    dependsOn build
+    doLast {
+        logger.info "Debugging process is started in a suspended state, listening on port 5005."
+        def moaArgs = Arrays.asList("-Xmx2048M".split(" "))
+        javaexec {
+            main = "-jar"
+            jvmArgs = moaArgs
+            debug = true
+            args = ["build/libs/${webApplicationBinaryName}"]
+            logger.info "Started ${commandLine}"
+        }
+    }
+}
+
+
+
+task allDependenciesInsight(group: "build", type: DependencyInsightReportTask, description: "Produce insight information for all dependencies") {}
+
+task allDependencies(group: "build", type: DependencyReportTask, description: "Display a graph of all project dependencies") {}
+
+
+task downloadTomcat(type: Download) {
+    def tomcatMajorVersion = "${tomcatVersion}".substring(0, "${tomcatVersion}".indexOf("."))
+    def downloadFile = "https://www.apache.org/dist/tomcat/tomcat-${tomcatMajorVersion}/v${tomcatVersion}/bin/apache-tomcat-${tomcatVersion}.zip"
+    logger.info "Downloading file $downloadFile"
+    src downloadFile
+    dest new File("apache-tomcat.zip")
+    overwrite false
+}
+
+task unzipTomcat(type: Copy) {
+    from zipTree(downloadTomcat.dest)
+    into buildDir
+    includeEmptyDirs = false
+}
+
+task setCatalinaPermissions(type:Exec) {
+    doFirst {
+        commandLine "chmod", "+x", "${tomcatDirectory}/bin/catalina.sh"
+    }
+}
+
+task setTomcatStartupPermissions(type:Exec) {
+    dependsOn setCatalinaPermissions
+    doFirst {
+        commandLine "chmod", "+x", "${tomcatDirectory}/bin/startup.sh"
+    }
+}
+
+task setTomcatShutdownPermissions(type:Exec) {
+    dependsOn setCatalinaPermissions
+    doFirst {
+        commandLine "chmod", "+x", "${tomcatDirectory}/bin/shutdown.sh"
+    }
+}
+
+task shutdownTomcat(type:Exec) {
+    doFirst {
+        environment["CATALINA_HOME"] = "${tomcatDirectory}"
+        commandLine "${tomcatDirectory}/bin/shutdown.sh", "2>/dev/null"
+        ignoreExitValue = true
+    }
+}
+
+
+task tomcatDeploy(type:Exec) {
+    dependsOn build, downloadTomcat, unzipTomcat,
+        setTomcatShutdownPermissions, setTomcatStartupPermissions,
+        shutdownTomcat
+
+    doFirst {
+        Files.copy(Paths.get(bootWar.archivePath.canonicalPath), 
+            Paths.get("${tomcatDirectory}/webapps/${webApplicationBinaryName}"), 
+            StandardCopyOption.REPLACE_EXISTING)
+        mkdir "${tomcatDirectory}/logs"
+        environment["CATALINA_HOME"] = "${tomcatDirectory}"
+        commandLine "${tomcatDirectory}/bin/startup.sh"
+    }
+}
+
+tail {
+    log = files("${tomcatDirectory}/logs/catalina.out")
+    showColors = true
+}
+
+build.mustRunAfter(setExecutable)
+
+unzipTomcat.mustRunAfter(downloadTomcat)
+setTomcatStartupPermissions.mustRunAfter(unzipTomcat)
+setTomcatShutdownPermissions.mustRunAfter(setTomcatStartupPermissions)
+shutdownTomcat.mustRunAfter(setTomcatShutdownPermissions)
+tomcatDeploy.mustRunAfter(shutdownTomcat).finalizedBy(tail)

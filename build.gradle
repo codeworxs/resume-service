@@ -1,0 +1,170 @@
+buildscript {
+	ext {
+		springBootVersion = '2.1.7.RELEASE'
+	}
+	repositories {
+		mavenLocal()
+		mavenCentral()
+		jcenter()
+	    maven { url "https://plugins.gradle.org/m2/" }
+	}
+	dependencies {
+		classpath "de.undercouch:gradle-download-task:${project.gradleDownloadTaskVersion}"
+		classpath "org.springframework.boot:spring-boot-gradle-plugin:${springBootVersion}"
+		classpath 'gradle.plugin.com.google.cloud.tools:jib-gradle-plugin:1.8.0'
+		classpath 'com.boazj.gradle:gradle-log-plugin:0.1.0'
+	}
+}
+
+apply plugin: 'war'
+apply plugin: 'eclipse'
+apply plugin: 'org.springframework.boot'
+apply plugin: 'io.spring.dependency-management'
+apply plugin: "idea"
+apply plugin: "com.google.cloud.tools.jib"
+
+
+configurations {
+	developmentOnly
+	runtimeClasspath {
+		extendsFrom developmentOnly
+	}
+}
+
+repositories {
+    mavenLocal()
+	mavenCentral()
+	jcenter()
+}
+
+project.ext."webApplicationBinaryName" = "resume-service.war"
+
+apply from: "https://dl.bintray.com/scalding/generic/waroverlay.gradle"
+apply from: rootProject.file("gradle/tasks.gradle")
+
+
+tasks.findByName("jibDockerBuild")
+    .dependsOn(copyWebAppIntoJib)
+    .finalizedBy(deleteWebAppFromJib)
+
+afterEvaluate { project ->
+    println "******************************************************************"
+    println "Codeworxs resume service"
+    println "- https://resume.lk/api"
+    println "******************************************************************"
+}
+
+configurations.all {
+    resolutionStrategy.cacheChangingModulesFor 0, 'seconds'
+}
+
+eclipse {
+    classpath {
+       downloadSources = true
+       downloadJavadoc = true
+    }
+}
+
+idea {
+    module {
+        downloadJavadoc = true
+        downloadSources = true
+    }
+}
+
+war {
+    includeWarJars = true
+    entryCompression = ZipEntryCompression.STORED
+}
+
+springBoot {
+    mainClassName = "com.codeworxs.resume.ResumelkApplication"
+}
+
+bootRun {
+    sourceResources sourceSets.main
+    classpath = sourceSets.main.runtimeClasspath
+}
+
+bootWar {
+    doFirst {
+        def executable = project.hasProperty("executable") && Boolean.valueOf(project.getProperty("executable"))
+        if (executable) {
+            logger.info "Including launch script for executable WAR artifact"
+            launchScript()
+        } else {
+            logger.info "WAR artifact is not marked as an executable"
+        }
+        archiveName "${webApplicationBinaryName}"
+        baseName "resume-service"
+        excludeDevtools = true
+    }
+}
+
+jib {
+    from {
+        image = project.baseDockerImage
+    }
+    to {
+        image = "${project.group}/${project.name}"
+        /**
+         ecr-login: Amazon Elastic Container Registry (ECR)
+         gcr: Google Container Registry (GCR)
+         osxkeychain: Docker Hub
+         */
+        credHelper = "osxkeychain"
+        /**
+        auth {
+            username = "*******"
+            password = "*******"
+        }
+        tags = [authServiceVersion]
+        */
+    }
+    container {
+        creationTime = 'USE_CURRENT_TIMESTAMP'
+        entrypoint = ['docker/entrypoint.sh']
+        ports = ['8080', '8443']
+        labels = [version:project.version, name:project.name, group:project.group]
+    }
+    extraDirectories {
+        paths = file('src/main/jib')
+        permissions = [
+            '/docker/entrypoint.sh': '755'
+        ]
+    }
+}
+
+dependencies {
+	implementation 'org.springframework.boot:spring-boot-starter-web'
+	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+	implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+	implementation 'org.springframework.boot:spring-boot-starter-data-rest'
+	implementation 'org.springframework.boot:spring-boot-starter-security'
+	implementation 'org.springframework.security.oauth:spring-security-oauth2:2.3.6.RELEASE'
+	implementation 'org.springframework.security:spring-security-oauth2-client'
+	implementation 'commons-io:commons-io:2.6'
+	implementation 'io.jsonwebtoken:jjwt:0.9.1'
+	implementation 'org.apache.commons:commons-lang3:3.8.1'
+	implementation 'commons-beanutils:commons-beanutils:1.9.3'
+	implementation 'com.auth0:jwks-rsa:0.3.0'
+	developmentOnly 'org.springframework.boot:spring-boot-devtools'
+	runtimeOnly 'mysql:mysql-connector-java'
+	compileOnly('org.projectlombok:lombok')
+    annotationProcessor("org.projectlombok:lombok")
+    testAnnotationProcessor("org.projectlombok:lombok")
+	runtimeOnly 'org.springframework.boot:spring-boot-devtools'
+	testImplementation('org.springframework.boot:spring-boot-starter-test') {
+		exclude group: 'org.junit.vintage', module: 'junit-vintage-engine'
+	}
+}
+
+test {
+	useJUnitPlatform()
+}
+
+  dependencyManagement {
+    imports {
+      mavenBom("org.springframework.boot:spring-boot-dependencies:2.1.7.RELEASE")
+    }
+  }
