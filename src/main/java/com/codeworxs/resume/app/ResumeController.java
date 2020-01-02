@@ -2,8 +2,9 @@ package com.codeworxs.resume.app;
 
 import java.time.LocalDateTime;
 
+import javax.servlet.http.HttpServletRequest;
+
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -27,9 +28,11 @@ public class ResumeController {
 	}
 
 	@PostMapping
-	public void createNewResume(@RequestBody ResumeMasterDto resumeMaster) throws ServiceException {
+	public Long createNewResume(@RequestBody ResumeMasterDto resumeMaster, HttpServletRequest request) throws ServiceException {
 		resumeMaster.setCreatedOnTime(LocalDateTime.now());
-		resumeMasterService.saveResume(resumeMaster);
+		Long onEditResumeId = resumeMasterService.saveResume(resumeMaster);
+		request.getSession().setAttribute("onEditResumeId", onEditResumeId);
+		return onEditResumeId;
 	}
 	
 	@PutMapping
